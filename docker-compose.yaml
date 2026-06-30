@@ -1,0 +1,10 @@
+version: '3.9'
+services:
+    docker-lite:
+        image: docker-lite
+        restart: unless-stopped
+        volumes:
+            - '/var/run/docker.sock:/var/run/docker.sock'
+        ports:
+            - '8090:8090'
+        container_name: docker-lite

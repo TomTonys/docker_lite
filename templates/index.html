@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>Docker Lite - 轻量本地容器管理</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body { padding: 20px; background: #f8f9fa; }
+        .status-running { color: #28a745; font-weight: bold; }
+        .status-exited { color: #dc3545; }
+        .alert { position: fixed; top: 20px; right: 20px; z-index: 9999; min-width: 320px; }
+        
+        thead th select {
+            background: transparent;
+            border: none;
+            color: white;
+            font-weight: bold;
+            padding: 0 4px;
+            width: auto;
+            min-width: 90px;
+            cursor: pointer;
+        }
+        thead th select:focus { outline: none; box-shadow: 0 0 0 2px rgba(255,255,255,0.5); border-radius: 4px; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1 class="mb-4">🐳 Docker Lite</h1>
+
+    <div id="alertBox" class="alert d-none"></div>
+
+    <!-- 搜索 + 拉取 -->
+    <div class="row mb-4 g-3">
+        <div class="col-md-5">
+            <input type="text" id="searchInput" class="form-control" placeholder="搜索容器名称...">
+        </div>
+        <div class="col-md-7">
+            <div class="input-group">
+                <input type="text" id="pullImage" class="form-control" placeholder="拉取镜像，例如: nginx:latest">
+                <button onclick="pullImage()" class="btn btn-primary">拉取</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 运行新容器 -->
+    <div class="card mb-4">
+        <div class="card-header">🚀 运行新容器</div>
+        <div class="card-body">
+            <form id="runForm">
+                <div class="row g-3">
+                    <div class="col-md-3"><input type="text" id="newImage" class="form-control" placeholder="镜像:tag" required></div>
+                    <div class="col-md-3"><input type="text" id="newName" class="form-control" placeholder="容器名称（可选）"></div>
+                    <div class="col-md-3"><input type="text" id="newPorts" class="form-control" placeholder="端口映射 如 8080:80"></div>
+                    <div class="col-md-3"><button type="submit" class="btn btn-success w-100">运行容器</button></div>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- 容器列表 -->
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <h4>容器列表 <span id="totalCount" class="badge bg-secondary">0 个</span></h4>
+        <div id="pagination" class="btn-group"></div>
+    </div>
+
+    <table class="table table-hover align-middle" id="containerTable">
+        <thead class="table-dark">
+            <tr>
+                <th>ID</th>
+                <th>名称</th>
+                <th>镜像</th>
+                <th style="min-width: 140px;">
+                    状态 
+                    <select id="statusFilter" onchange="loadContainers(1)">
+                        <option value="all">全部</option>
+                        <option value="running">运行中</option>
+                        <option value="exited">已停止</option>
+                        <option value="created">已创建</option>
+                    </select>
+                </th>
+                <th>端口</th>
+                <th>创建时间</th>
+                <th width="300">操作</th>
+            </tr>
+        </thead>
+        <tbody></tbody>
+    </table>
+</div>
+
+<!-- 详情模态框 -->
+<div class="modal fade" id="detailModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">容器详情 - <span id="modalName"></span></h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body" id="modalBody"></div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+// ==================== 函数 ====================
+function showAlert(msg, type = 'success') {
+    const box = document.getElementById('alertBox');
+    box.className = `alert alert-${type} d-block`;
+    box.textContent = msg;
+    setTimeout(() => box.classList.add('d-none'), 4000);
+}
+
+let currentPage = 1;
+let currentStatus = 'all';
+
+async function loadContainers(page = 1) {
+    currentPage = page;
+    const search = document.getElementById('searchInput').value.trim().toLowerCase();
+    currentStatus = document.getElementById('statusFilter').value;
+    
+    let url = `/api/containers?status=${currentStatus}&page=${page}`;
+    if (search) url += `&search=${encodeURIComponent(search)}`;
+
+    try {
+        const res = await fetch(url);
+        const data = await res.json();
+
+        document.getElementById('totalCount').textContent = `${data.total} 个`;
+
+        const tbody = document.querySelector('#containerTable tbody');
+        tbody.innerHTML = '';
+
+        if (data.containers.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="7" class="text-center py-4 text-muted">没有找到匹配的容器</td></tr>`;
+        } else {
+            data.containers.forEach(c => {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td><code>${c.id}</code></td>
+                    <td><strong>${c.name}</strong></td>
+                    <td>${c.image}</td>
+                    <td><span class="${c.status === 'running' ? 'status-running' : 'status-exited'}">${c.status}</span></td>
+                    <td>${Object.keys(c.ports || {}).join(', ') || '-'}</td>
+                    <td>${c.created}</td>
+                    <td>
+                        <button onclick="showDetail('${c.id}')" class="btn btn-sm btn-secondary me-1">详情</button>
+                        ${c.status === 'running' ? 
+                            `<button onclick="action('stop', '${c.id}')" class="btn btn-sm btn-warning me-1">停止</button>` : 
+                            `<button onclick="action('start', '${c.id}')" class="btn btn-sm btn-success me-1">启动</button>`}
+                        <button onclick="action('restart', '${c.id}')" class="btn btn-sm btn-info me-1">重启</button>
+                        <button onclick="action('update', '${c.id}')" class="btn btn-sm btn-primary me-1">更新</button>
+                        <button onclick="action('remove', '${c.id}')" class="btn btn-sm btn-danger">删除</button>
+                    </td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+        renderPagination(data.page, data.total_pages);
+    } catch (e) {
+        showAlert('加载失败', 'danger');
+    }
+}
+
+async function showDetail(containerId) {
+    try {
+        const res = await fetch(`/api/container/${containerId}`);
+        const data = await res.json();
+        if (!data.success) return showAlert(data.message, 'danger');
+
+        document.getElementById('modalBody').innerHTML = `
+            <table class="table table-bordered">
+                <tr><th width="140">容器ID</th><td><code>${data.id}</code></td></tr>
+                <tr><th>名称</th><td><strong>${data.name}</strong></td></tr>
+                <tr><th>镜像</th><td>${data.image}</td></tr>
+                <tr><th>状态</th><td><span class="${data.status === 'running' ? 'status-running' : 'status-exited'}">${data.status}</span></td></tr>
+                <tr><th>创建时间</th><td>${data.created}</td></tr>
+                <tr><th>端口映射</th><td>${data.ports}</td></tr>
+                <tr><th>命令</th><td><code>${data.command || '默认'}</code></td></tr>
+            </table>
+            <h6>环境变量</h6><pre>${data.env || '无'}</pre>
+            <h6>卷挂载</h6><pre>${data.volumes || '无'}</pre>
+        `;
+        new bootstrap.Modal(document.getElementById('detailModal')).show();
+    } catch (e) {
+        showAlert('获取详情失败', 'danger');
+    }
+}
+
+async function action(act, id) {
+    if (act === 'remove' && !confirm('确定删除该容器吗？')) return;
+    if (act === 'update' && !confirm('确定更新容器吗？')) return;
+
+    try {
+        const res = await fetch(`/api/${act}/${id}`, { method: 'POST' });
+        const data = await res.json();
+        showAlert(data.message, data.success ? 'success' : 'danger');
+        if (data.success) loadContainers(currentPage);
+    } catch (e) {
+        showAlert('操作失败', 'danger');
+    }
+}
+
+async function pullImage() {
+    const image = document.getElementById('pullImage').value.trim();
+    if (!image) return alert('请输入镜像名称');
+    try {
+        const res = await fetch('/api/pull', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({image})
+        });
+        const data = await res.json();
+        showAlert(data.message, data.success ? 'success' : 'danger');
+        if (data.success) loadContainers(1);
+    } catch (e) {
+        showAlert('拉取失败', 'danger');
+    }
+}
+
+function renderPagination(current, total) {
+    const container = document.getElementById('pagination');
+    container.innerHTML = '';
+    if (total <= 1) return;
+    for (let i = 1; i <= total; i++) {
+        const btn = document.createElement('button');
+        btn.className = `btn btn-sm ${i === current ? 'btn-primary' : 'btn-outline-primary'}`;
+        btn.textContent = i;
+        btn.onclick = () => loadContainers(i);
+        container.appendChild(btn);
+    }
+}
+
+// 初始化
+document.addEventListener('DOMContentLoaded', () => {
+    const searchInput = document.getElementById('searchInput');
+    let timeout;
+    searchInput.addEventListener('input', () => {
+        clearTimeout(timeout);
+        timeout = setTimeout(() => loadContainers(1), 350);
+    });
+
+    document.getElementById('runForm').onsubmit = (e) => {
+        e.preventDefault();
+        alert('运行新容器功能开发中...');
+    };
+
+    loadContainers(1);
+});
+</script>
+</body>
+</html>
